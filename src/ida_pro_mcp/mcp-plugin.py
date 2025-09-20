@@ -8,6 +8,7 @@ import json
 import struct
 import threading
 import http.server
+import socket
 from urllib.parse import urlparse
 from typing import Any, Callable, get_type_hints, TypedDict, Optional, Annotated, TypeVar, Generic, NotRequired
 
@@ -189,11 +190,128 @@ class JSONRPCRequestHandler(http.server.BaseHTTPRequestHandler):
 class MCPHTTPServer(http.server.HTTPServer):
     allow_reuse_address = False
 
+class ServerConfigDialog:
+    """Simple dialog to configure server IP and port"""
+    
+    def __init__(self, default_host="localhost", default_port=13337):
+        self.host = default_host
+        self.port = default_port
+        self.result = None
+    
+    def show(self):
+        """Show the configuration dialog and return (host, port) or None if cancelled"""
+        try:
+            # Try to use IDA's built-in dialog system
+            import ida_kernwin
+            
+            # Create a single form with both fields
+            class ConfigForm(ida_kernwin.Form):
+                def __init__(self, default_host, default_port):
+                    form = r"""STARTITEM 0
+MCP Server Configuration
+
+<#IP address or hostname#Host\::{host}>
+<#Port number (1-65535)#Port\::{port}>
+"""
+                    controls = {
+                        'host': ida_kernwin.Form.StringInput(value=default_host),
+                        'port': ida_kernwin.Form.NumericInput(tp=ida_kernwin.Form.FT_DEC, value=default_port)
+                    }
+                    ida_kernwin.Form.__init__(self, form, controls)
+            
+            # Create and show the form
+            form = ConfigForm(self.host, self.port)
+            form.Compile()
+            
+            if form.Execute():
+                host = form.host.value
+                port = int(form.port.value)
+                
+                # Validate inputs
+                if self._validate_host(host) and self._validate_port(port):
+                    self.host = host
+                    self.port = port
+                    form.Free()
+                    return (self.host, self.port)
+                else:
+                    ida_kernwin.warning("Invalid host or port. Please try again.")
+                    form.Free()
+                    return None
+            else:
+                form.Free()
+                return None
+                
+        except (ImportError, AttributeError, Exception) as e:
+            # Fallback to simple input if IDA dialog not available or fails
+            print(f"[MCP] Dialog error: {e}, falling back to console input")
+            return self._simple_input()
+    
+    def _validate_host(self, host):
+        """Validate host/IP address"""
+        if not host or not host.strip():
+            return False
+        
+        host = host.strip()
+        
+        # Check if it's a valid IP address
+        try:
+            socket.inet_aton(host)
+            return True
+        except socket.error:
+            pass
+        
+        # Check if it's localhost
+        if host.lower() in ['localhost', '127.0.0.1']:
+            return True
+        
+        # For other hostnames, do a basic check
+        if len(host) > 0 and not any(c in host for c in [' ', '\t', '\n', '\r']):
+            return True
+        
+        return False
+    
+    def _validate_port(self, port):
+        """Validate port number"""
+        try:
+            port = int(port)
+            return 1 <= port <= 65535
+        except (ValueError, TypeError):
+            return False
+    
+    def _simple_input(self):
+        """Fallback simple input method"""
+        print("\n=== MCP Server Configuration ===")
+        print(f"Current host: {self.host}")
+        print(f"Current port: {self.port}")
+        print("Enter new values (press Enter to keep current):")
+        
+        try:
+            new_host = input(f"Host [{self.host}]: ").strip()
+            if new_host:
+                if not self._validate_host(new_host):
+                    print("Invalid host, keeping current value")
+                else:
+                    self.host = new_host
+            
+            new_port = input(f"Port [{self.port}]: ").strip()
+            if new_port:
+                if not self._validate_port(new_port):
+                    print("Invalid port, keeping current value")
+                else:
+                    self.port = int(new_port)
+            
+            return (self.host, self.port)
+        except (EOFError, KeyboardInterrupt):
+            print("Configuration cancelled")
+            return None
+
 class Server:
     HOST = "localhost"
     PORT = 13337
 
-    def __init__(self):
+    def __init__(self, host="localhost", port=13337):
+        self.host = host
+        self.port = port
         self.server = None
         self.server_thread = None
         self.running = False
@@ -223,12 +341,12 @@ class Server:
     def _run_server(self):
         try:
             # Create server in the thread to handle binding
-            self.server = MCPHTTPServer((Server.HOST, Server.PORT), JSONRPCRequestHandler)
-            print(f"[MCP] Server started at http://{Server.HOST}:{Server.PORT}")
+            self.server = MCPHTTPServer((self.host, self.port), JSONRPCRequestHandler)
+            print(f"[MCP] Server started at http://{self.host}:{self.port}")
             self.server.serve_forever()
         except OSError as e:
             if e.errno == 98 or e.errno == 10048:  # Port already in use (Linux/Windows)
-                print("[MCP] Error: Port 13337 is already in use")
+                print(f"[MCP] Error: Port {self.port} is already in use")
             else:
                 print(f"[MCP] Server error: {e}")
             self.running = False
@@ -1290,7 +1408,7 @@ def patch_address_assembles(
 
 @jsonrpc
 @idaread
-def get_global_variable_value_by_name(variable_name: Annotated[str, "Name of the global variable"]) -> str:
+def get_global_var_value_by_name(variable_name: Annotated[str, "Name of the global variable"]) -> str:
     """
     Read a global variable's value (if known at compile-time)
 
@@ -1304,7 +1422,7 @@ def get_global_variable_value_by_name(variable_name: Annotated[str, "Name of the
 
 @jsonrpc
 @idaread
-def get_global_variable_value_at_address(ea: Annotated[str, "Address of the global variable"]) -> str:
+def get_global_var_value_at_addr(ea: Annotated[str, "Address of the global variable"]) -> str:
     """
     Read a global variable's value by its address (if known at compile-time)
 
@@ -2142,7 +2260,8 @@ class MCP(idaapi.plugin_t):
     wanted_hotkey = "Ctrl-Alt-M"
 
     def init(self):
-        self.server = Server()
+        # Initialize with default values, will be configured when run
+        self.server = None
         hotkey = MCP.wanted_hotkey.replace("-", "+")
         if sys.platform == "darwin":
             hotkey = hotkey.replace("Alt", "Option")
@@ -2150,10 +2269,24 @@ class MCP(idaapi.plugin_t):
         return idaapi.PLUGIN_KEEP
 
     def run(self, args):
+        # Show configuration dialog before starting server
+        dialog = ServerConfigDialog()
+        config = dialog.show()
+        
+        if config is None:
+            print("[MCP] Server configuration cancelled")
+            return
+        
+        host, port = config
+        print(f"[MCP] Starting server with host={host}, port={port}")
+        
+        # Create server with configured host/port
+        self.server = Server(host, port)
         self.server.start()
 
     def term(self):
-        self.server.stop()
+        if self.server:
+            self.server.stop()
 
 def PLUGIN_ENTRY():
     return MCP()

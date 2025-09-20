@@ -30,6 +30,8 @@ Available functionality:
 - `rename_local_variable(function_address, old_name, new_name)`: Rename a local variable in a function.
 - `rename_global_variable(old_name, new_name)`: Rename a global variable.
 - `set_global_variable_type(variable_name, new_type)`: Set a global variable's type.
+- `get_global_var_value_by_name(variable_name)`: Read a global variable's value by its name (if known at compile-time).
+- `get_global_var_value_at_addr(address)`: Read a global variable's value by its address (if known at compile-time).
 - `rename_function(function_address, new_name)`: Rename a function.
 - `set_function_prototype(function_address, prototype)`: Set a function's prototype.
 - `declare_c_type(c_declaration)`: Create or update a local type from a C declaration.
@@ -78,6 +80,15 @@ ida-pro-mcp --install
 ```
 
 **Important**: Make sure you completely restart IDA/Visual Studio Code/Claude for the installation to take effect. Claude runs in the background and you need to quit it from the tray icon.
+
+## Configuration
+
+When you start the MCP plugin in IDA Pro (Edit -> Plugins -> MCP or Ctrl+Alt+M), you'll be prompted to configure the server settings:
+
+- **Host**: IP address or hostname to bind the server to (default: `localhost`)
+- **Port**: Port number for the server (default: `13337`)
+
+The configuration dialog will validate your inputs and only start the server if valid values are provided. You can cancel the dialog to abort server startup.
 
 https://github.com/user-attachments/assets/65ed3373-a187-4dd5-a807-425dca1d8ee9
 
