@@ -200,52 +200,43 @@ class ServerConfigDialog:
     
     def show(self):
         """Show the configuration dialog and return (host, port) or None if cancelled"""
-        try:
-            # Try to use IDA's built-in dialog system
-            import ida_kernwin
-            
-            # Create a single form with both fields
-            class ConfigForm(ida_kernwin.Form):
-                def __init__(self, default_host, default_port):
-                    form = r"""STARTITEM 0
-MCP Server Configuration
+        # Create a single form with both fields
+        class ConfigForm(ida_kernwin.Form):
+            def __init__(self, default_host, default_port):
+                form = r"""STARTITEM 0
+                    MCP Server Configuration
 
-<#IP address or hostname#Host\::{host}>
-<#Port number (1-65535)#Port\::{port}>
-"""
-                    controls = {
-                        'host': ida_kernwin.Form.StringInput(value=default_host),
-                        'port': ida_kernwin.Form.NumericInput(tp=ida_kernwin.Form.FT_DEC, value=default_port)
-                    }
-                    ida_kernwin.Form.__init__(self, form, controls)
+                    <#IP address or hostname#Host\::{host}>
+                    <#Port number (1-65535)#Port\::{port}>
+                    """
+                controls = {
+                    'host': ida_kernwin.Form.StringInput(value=default_host),
+                    'port': ida_kernwin.Form.NumericInput(tp=ida_kernwin.Form.FT_DEC, value=default_port)
+                }
+                ida_kernwin.Form.__init__(self, form, controls)
+        
+        # Create and show the form
+        form = ConfigForm(self.host, self.port)
+        form.Compile()
+        
+        if form.Execute():
+            host = form.host.value
+            port = int(form.port.value)
             
-            # Create and show the form
-            form = ConfigForm(self.host, self.port)
-            form.Compile()
-            
-            if form.Execute():
-                host = form.host.value
-                port = int(form.port.value)
-                
-                # Validate inputs
-                if self._validate_host(host) and self._validate_port(port):
-                    self.host = host
-                    self.port = port
-                    form.Free()
-                    return (self.host, self.port)
-                else:
-                    ida_kernwin.warning("Invalid host or port. Please try again.")
-                    form.Free()
-                    return None
+            # Validate inputs
+            if self._validate_host(host) and self._validate_port(port):
+                self.host = host
+                self.port = port
+                form.Free()
+                return (self.host, self.port)
             else:
+                ida_kernwin.warning("Invalid host or port. Please try again.")
                 form.Free()
                 return None
-                
-        except (ImportError, AttributeError, Exception) as e:
-            # Fallback to simple input if IDA dialog not available or fails
-            print(f"[MCP] Dialog error: {e}, falling back to console input")
-            return self._simple_input()
-    
+        else:
+            form.Free()
+            return None
+
     def _validate_host(self, host):
         """Validate host/IP address"""
         if not host or not host.strip():
@@ -336,7 +327,6 @@ class Server:
         if self.server_thread:
             self.server_thread.join()
             self.server = None
-        print("[MCP] Server stopped")
 
     def _run_server(self):
         try:
@@ -2262,31 +2252,80 @@ class MCP(idaapi.plugin_t):
     def init(self):
         # Initialize with default values, will be configured when run
         self.server = None
+        self.is_running = False
+        self.host = "localhost"
+        self.port = 13337
         hotkey = MCP.wanted_hotkey.replace("-", "+")
         if sys.platform == "darwin":
             hotkey = hotkey.replace("Alt", "Option")
-        print(f"[MCP] Plugin loaded, use Edit -> Plugins -> MCP ({hotkey}) to start the server")
+        print(f"[MCP] Plugin loaded, use Edit -> Plugins -> MCP ({hotkey}) to toggle the server")
         return idaapi.PLUGIN_KEEP
 
+    def _show_stop_warning(self):
+        """Show warning dialog when stopping the server"""
+        # Use IDA's message box for confirmation
+        result = ida_kernwin.ask_yn(
+            ida_kernwin.ASKBTN_NO,  # Default to "No"
+            f"MCP Server is currently running on {self.host}:{self.port}.\n\n"
+            "Stopping the server will disconnect all active MCP clients.\n"
+            "Are you sure you want to stop the MCP server?"
+        )
+        
+        return result == ida_kernwin.ASKBTN_YES
+
+    def get_status(self):
+        """Get current server status"""
+        if self.server and self.server.running:
+            return f"MCP Server is running at http://{self.host}:{self.port}"
+        else:
+            return "MCP Server is not running"
+
     def run(self, args):
-        # Show configuration dialog before starting server
-        dialog = ServerConfigDialog()
-        config = dialog.show()
+        # Check actual server status to ensure state consistency
+        actual_running = self.server is not None and self.server.running
         
-        if config is None:
-            print("[MCP] Server configuration cancelled")
-            return
-        
-        host, port = config
-        print(f"[MCP] Starting server with host={host}, port={port}")
-        
-        # Create server with configured host/port
-        self.server = Server(host, port)
-        self.server.start()
+        if actual_running or self.is_running:
+            # Server is running, ask for confirmation to stop
+            if self._show_stop_warning():
+                print("[MCP] Stopping server...")
+                if self.server:
+                    self.server.stop()
+                    self.server = None
+                self.is_running = False
+                print("[MCP] Server stopped")
+            else:
+                print("[MCP] Server stop cancelled")
+        else:
+            # Server is not running, show configuration dialog and start
+            dialog = ServerConfigDialog(self.host, self.port)
+            config = dialog.show()
+            
+            if config is None:
+                print("[MCP] Server configuration cancelled")
+                return
+            
+            host, port = config
+            self.host = host
+            self.port = port
+            print(f"[MCP] Starting server with host={host}, port={port}")
+            
+            # Create server with configured host/port
+            self.server = Server(host, port)
+            self.server.start()
+            
+            # Check if server actually started successfully
+            if self.server.running:
+                self.is_running = True
+                print(f"[MCP] Server started successfully at http://{host}:{port}")
+            else:
+                print("[MCP] Failed to start server")
+                self.server = None
+                self.is_running = False
 
     def term(self):
         if self.server:
             self.server.stop()
+            self.is_running = False
 
 def PLUGIN_ENTRY():
     return MCP()
