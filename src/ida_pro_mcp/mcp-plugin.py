@@ -1040,54 +1040,70 @@ def disassemble_function(
 
         raw_instruction = idaapi.generate_disasm_line(address, 0)
         tls = ida_kernwin.tagged_line_sections_t()
-        ida_kernwin.parse_tagged_line_sections(tls, raw_instruction)
-        insn_section = tls.first(ida_lines.COLOR_INSN)
+        if raw_instruction:
+            ida_kernwin.parse_tagged_line_sections(tls, raw_instruction)
+        insn_section = tls.first(ida_lines.COLOR_INSN) if raw_instruction else None
 
         operands = []
-        for op_tag in range(ida_lines.COLOR_OPND1, ida_lines.COLOR_OPND8 + 1):
-            op_n = tls.first(op_tag)
-            if not op_n:
-                break
+        if raw_instruction:
+            for op_tag in range(ida_lines.COLOR_OPND1, ida_lines.COLOR_OPND8 + 1):
+                op_n = tls.first(op_tag)
+                if not op_n:
+                    break
 
-            op: str = op_n.substr(raw_instruction)
-            op_str = ida_lines.tag_remove(op)
-
-            # Do a lot of work to add address comments for symbols
-            for idx in range(len(op) - 2):
-                if op[idx] != idaapi.COLOR_ON:
-                    continue
-
-                idx += 1
-                if ord(op[idx]) != idaapi.COLOR_ADDR:
-                    continue
-
-                idx += 1
-                addr_string = op[idx:idx + idaapi.COLOR_ADDR_SIZE]
-                idx += idaapi.COLOR_ADDR_SIZE
-
-                addr = int(addr_string, 16)
-
-                # Find the next color and slice until there
-                symbol = op[idx:op.find(idaapi.COLOR_OFF, idx)]
-
-                if symbol == '':
-                    # We couldn't figure out the symbol, so use the whole op_str
-                    symbol = op_str
-
-                comments += [f"{symbol}={addr:#x}"]
-
-                # print its value if its type is available
                 try:
-                    value = get_global_variable_value_internal(addr)
-                except:
+                    op: str = op_n.substr(raw_instruction)
+                    op_str = ida_lines.tag_remove(op)
+                except Exception:
+                    # Be defensive against malformed tagged lines
                     continue
 
-                comments += [f"*{symbol}={value}"]
+                # Do a lot of work to add address comments for symbols
+                try:
+                    for idx in range(len(op) - 2):
+                        if op[idx] != idaapi.COLOR_ON:
+                            continue
 
-            operands += [op_str]
+                        idx += 1
+                        if ord(op[idx]) != idaapi.COLOR_ADDR:
+                            continue
 
-        mnem = ida_lines.tag_remove(insn_section.substr(raw_instruction))
-        instruction = f"{mnem} {', '.join(operands)}"
+                        idx += 1
+                        addr_string = op[idx:idx + idaapi.COLOR_ADDR_SIZE]
+                        idx += idaapi.COLOR_ADDR_SIZE
+
+                        addr = int(addr_string, 16)
+
+                        # Find the next color and slice until there
+                        symbol = op[idx:op.find(idaapi.COLOR_OFF, idx)]
+
+                        if symbol == '':
+                            # We couldn't figure out the symbol, so use the whole op_str
+                            symbol = op_str
+
+                        comments += [f"{symbol}={addr:#x}"]
+
+                        # print its value if its type is available
+                        try:
+                            value = get_global_variable_value_internal(addr)
+                            comments += [f"*{symbol}={value}"]
+                        except Exception:
+                            pass
+                except Exception:
+                    # Be resilient to any color parsing issues
+                    pass
+
+                operands += [op_str]
+
+        # Build instruction string safely
+        if insn_section and raw_instruction:
+            try:
+                mnem = ida_lines.tag_remove(insn_section.substr(raw_instruction))
+                instruction = f"{mnem} {', '.join(operands)}".rstrip()
+            except Exception:
+                instruction = ida_lines.tag_remove(raw_instruction)
+        else:
+            instruction = ida_lines.tag_remove(raw_instruction) if raw_instruction else "db ?"
 
         line = DisassemblyLine(
             address=f"{address:#x}",
@@ -1130,6 +1146,52 @@ def disassemble_address(
     instruction_count: Annotated[int, "Number of instructions to disassemble"],
 ) -> list[DisassemblyLine]:
     """Disassemble a fixed number of instructions starting at the given address"""
+    def _render_data_line(ea: int) -> tuple[str, int]:
+        """Render a safe data representation at ea and return (text, size)."""
+        try:
+            # Try string literal first
+            if ida_bytes.is_strlit(ea):
+                s = idaapi.get_strlit_contents(ea, -1, 0)
+                if isinstance(s, (bytes, bytearray)):
+                    try:
+                        text = s.decode("utf-8", errors="replace")
+                    except Exception:
+                        text = s.decode(errors="replace")
+                else:
+                    text = str(s)
+                size = ida_bytes.get_item_size(ea) or len(s) or 1
+                return (f"string \"{text}\"", size)
+        except Exception:
+            pass
+
+        # Fallback to raw bytes
+        size = ida_bytes.get_item_size(ea)
+        if not size or size <= 0:
+            size = 1
+        try:
+            raw = ida_bytes.get_bytes(ea, min(size, 16)) or b""
+        except Exception:
+            raw = b""
+        bytes_repr = ", ".join(f"0x{b:02X}" for b in raw)
+        if not bytes_repr:
+            bytes_repr = "?"
+        # Try to pick an assembler-like directive based on size when aligned
+        directive = "db"
+        if size in (2, 4, 8):
+            # Check alignment heuristically
+            if (ea % size) == 0:
+                directive = {2: "dw", 4: "dd", 8: "dq"}[size]
+                try:
+                    val = {
+                        2: ida_bytes.get_word,
+                        4: ida_bytes.get_dword,
+                        8: ida_bytes.get_qword,
+                    }[size](ea)
+                    return (f"{directive} 0x{val:X}", size)
+                except Exception:
+                    pass
+        return (f"{directive} {bytes_repr}", size)
+
     current_ea = parse_address(start_address)
     max_ea = ida_ida.inf_get_max_ea()
 
@@ -1137,8 +1199,7 @@ def disassemble_address(
     for _ in range(instruction_count):
         # Decode instruction; stop if decoding fails
         insn = idaapi.insn_t()
-        if not idaapi.decode_insn(insn, current_ea):
-            break
+        decoded = idaapi.decode_insn(insn, current_ea)
 
         seg = idaapi.getseg(current_ea)
         segment = idaapi.get_segm_name(seg) if seg else None
@@ -1153,47 +1214,75 @@ def disassemble_address(
         if comment := idaapi.get_cmt(current_ea, True):
             comments += [comment]
 
-        raw_instruction = idaapi.generate_disasm_line(current_ea, 0)
-        tls = ida_kernwin.tagged_line_sections_t()
-        ida_kernwin.parse_tagged_line_sections(tls, raw_instruction)
-        insn_section = tls.first(ida_lines.COLOR_INSN)
+        instruction: str
+        advanced_by: Optional[int] = None
 
-        operands = []
-        for op_tag in range(ida_lines.COLOR_OPND1, ida_lines.COLOR_OPND8 + 1):
-            op_n = tls.first(op_tag)
-            if not op_n:
-                break
+        if not decoded:
+            # Not an instruction (likely data). Render a safe data line and advance by item size.
+            instruction, advanced_by = _render_data_line(current_ea)
+        else:
+            raw_instruction = idaapi.generate_disasm_line(current_ea, 0)
+            tls = ida_kernwin.tagged_line_sections_t()
+            if raw_instruction:
+                ida_kernwin.parse_tagged_line_sections(tls, raw_instruction)
+            insn_section = tls.first(ida_lines.COLOR_INSN) if raw_instruction else None
 
-            op: str = op_n.substr(raw_instruction)
-            op_str = ida_lines.tag_remove(op)
+            operands = []
+            if raw_instruction:
+                for op_tag in range(ida_lines.COLOR_OPND1, ida_lines.COLOR_OPND8 + 1):
+                    op_n = tls.first(op_tag)
+                    if not op_n:
+                        break
 
-            # Add address comments for operands when possible
-            for idx in range(len(op) - 2):
-                if op[idx] != idaapi.COLOR_ON:
-                    continue
+                    try:
+                        op: str = op_n.substr(raw_instruction)
+                        op_str = ida_lines.tag_remove(op)
+                    except Exception:
+                        # Defensive: if substr fails, skip this operand
+                        continue
 
-                idx += 1
-                if ord(op[idx]) != idaapi.COLOR_ADDR:
-                    continue
+                    # Add address comments for operands when possible
+                    try:
+                        for idx in range(len(op) - 2):
+                            if op[idx] != idaapi.COLOR_ON:
+                                continue
 
-                idx += 1
-                addr_string = op[idx:idx + idaapi.COLOR_ADDR_SIZE]
-                idx += idaapi.COLOR_ADDR_SIZE
+                            idx += 1
+                            if ord(op[idx]) != idaapi.COLOR_ADDR:
+                                continue
 
-                addr = int(addr_string, 16)
+                            idx += 1
+                            addr_string = op[idx:idx + idaapi.COLOR_ADDR_SIZE]
+                            idx += idaapi.COLOR_ADDR_SIZE
 
-                # Find the next color and slice until there
-                symbol = op[idx:op.find(idaapi.COLOR_OFF, idx)]
+                            addr = int(addr_string, 16)
 
-                if symbol == '':
-                    symbol = op_str
+                            # Find the next color and slice until there
+                            symbol = op[idx:op.find(idaapi.COLOR_OFF, idx)]
 
-                comments += [f"{symbol}={addr:#x}"]
+                            if symbol == '':
+                                symbol = op_str
 
-            operands += [op_str]
+                            comments += [f"{symbol}={addr:#x}"]
+                    except Exception:
+                        # Be resilient to any color parsing issues
+                        pass
 
-        mnem = ida_lines.tag_remove(insn_section.substr(raw_instruction))
-        instruction = f"{mnem} {', '.join(operands)}".rstrip()
+                    operands += [op_str]
+
+            if insn_section and raw_instruction:
+                try:
+                    mnem = ida_lines.tag_remove(insn_section.substr(raw_instruction))
+                    instruction = f"{mnem} {', '.join(operands)}".rstrip()
+                except Exception:
+                    # Fallback to raw disassembly string if anything goes wrong
+                    instruction = ida_lines.tag_remove(raw_instruction)
+            else:
+                # No instruction section (e.g., data or unparsable line); use raw disasm or data rendering
+                if raw_instruction:
+                    instruction = ida_lines.tag_remove(raw_instruction)
+                else:
+                    instruction, advanced_by = _render_data_line(current_ea)
 
         line = DisassemblyLine(
             address=f"{current_ea:#x}",
@@ -1208,9 +1297,13 @@ def disassemble_address(
 
         lines += [line]
 
-        next_ea = idc.next_head(current_ea, max_ea)
-        if next_ea == idaapi.BADADDR or next_ea <= current_ea:
-            break
+        # Advance to next address
+        if advanced_by is not None:
+            next_ea = current_ea + max(advanced_by, 1)
+        else:
+            next_ea = idc.next_head(current_ea, max_ea)
+            if next_ea == idaapi.BADADDR or next_ea <= current_ea:
+                break
         current_ea = next_ea
 
     return lines
