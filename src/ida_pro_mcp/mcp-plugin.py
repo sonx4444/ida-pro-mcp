@@ -5,6 +5,7 @@ if sys.version_info < (3, 11):
     raise RuntimeError("Python 3.11 or higher is required for the MCP plugin")
 
 import json
+import inspect
 import struct
 import threading
 import http.server
@@ -38,39 +39,59 @@ class RPCRegistry:
 
         func = self.methods[method]
         hints = get_type_hints(func)
+        sig = inspect.signature(func)
 
         # Remove return annotation if present
         hints.pop("return", None)
 
-        if isinstance(params, list):
-            if len(params) != len(hints):
-                raise JSONRPCError(-32602, f"Invalid params: expected {len(hints)} arguments, got {len(params)}")
-
-            # Validate and convert parameters
-            converted_params = []
-            for value, (param_name, expected_type) in zip(params, hints.items()):
-                try:
+        def coerce(value, expected_type, name: str):
+            # Best-effort coercion; skip when expected_type isn't a concrete class
+            try:
+                if isinstance(expected_type, type):
                     if not isinstance(value, expected_type):
-                        value = expected_type(value)
-                    converted_params.append(value)
+                        return expected_type(value)
+            except Exception:
+                pass
+            return value
+
+        if isinstance(params, list):
+            parameters = list(sig.parameters.values())
+            if len(params) > len(parameters):
+                raise JSONRPCError(-32602, f"Invalid params: expected at most {len(parameters)} arguments, got {len(params)}")
+
+            converted_params = []
+            # Provided positional args
+            for idx, value in enumerate(params):
+                param = parameters[idx]
+                expected_type = hints.get(param.name, type(value))
+                try:
+                    converted_params.append(coerce(value, expected_type, param.name))
                 except (ValueError, TypeError):
-                    raise JSONRPCError(-32602, f"Invalid type for parameter '{param_name}': expected {expected_type.__name__}")
+                    typename = getattr(expected_type, "__name__", str(expected_type))
+                    raise JSONRPCError(-32602, f"Invalid type for parameter '{param.name}': expected {typename}")
+
+            # Fill in defaults for remaining parameters
+            for param in parameters[len(params):]:
+                if param.default is inspect.Parameter.empty:
+                    raise JSONRPCError(-32602, f"Invalid params: missing required parameter '{param.name}'")
+                converted_params.append(param.default)
 
             return func(*converted_params)
         elif isinstance(params, dict):
-            if set(params.keys()) != set(hints.keys()):
-                raise JSONRPCError(-32602, f"Invalid params: expected {list(hints.keys())}")
-
-            # Validate and convert parameters
             converted_params = {}
-            for param_name, expected_type in hints.items():
-                value = params.get(param_name)
+            for name, param in sig.parameters.items():
+                if name in params:
+                    value = params[name]
+                else:
+                    if param.default is inspect.Parameter.empty:
+                        raise JSONRPCError(-32602, f"Invalid params: missing required parameter '{name}'")
+                    value = param.default
+                expected_type = hints.get(name, type(value))
                 try:
-                    if not isinstance(value, expected_type):
-                        value = expected_type(value)
-                    converted_params[param_name] = value
+                    converted_params[name] = coerce(value, expected_type, name)
                 except (ValueError, TypeError):
-                    raise JSONRPCError(-32602, f"Invalid type for parameter '{param_name}': expected {expected_type.__name__}")
+                    typename = getattr(expected_type, "__name__", str(expected_type))
+                    raise JSONRPCError(-32602, f"Invalid type for parameter '{name}': expected {typename}")
 
             return func(**converted_params)
         else:
@@ -332,7 +353,6 @@ class Server:
         try:
             # Create server in the thread to handle binding
             self.server = MCPHTTPServer((self.host, self.port), JSONRPCRequestHandler)
-            print(f"[MCP] Server started at http://{self.host}:{self.port}")
             self.server.serve_forever()
         except OSError as e:
             if e.errno == 98 or e.errno == 10048:  # Port already in use (Linux/Windows)
