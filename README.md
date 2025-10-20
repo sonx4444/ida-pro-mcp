@@ -16,13 +16,12 @@ Available functionality:
 - `get_current_function()`: Get the function currently selected by the user.
 - `convert_number(text, size)`: Convert a number (decimal, hexadecimal) to different representations.
 - `list_functions(offset, count)`: List all functions in the database (paginated).
-- `list_globals_filter(offset, count, filter)`: List matching globals in the database (paginated, filtered).
-- `list_globals(offset, count)`: List all globals in the database (paginated).
-- `list_strings_filter(offset, count, filter)`: List matching strings in the database (paginated, filtered).
-- `list_strings(offset, count)`: List all strings in the database (paginated).
+- `list_globals(offset, count, filter?)`: List globals in the database (paginated, optional filter).
+- `list_strings(offset, count, filter?)`: List strings in the database (paginated, optional filter).
 - `list_local_types()`: List all Local types in the database.
 - `decompile_function(address)`: Decompile a function at the given address.
 - `disassemble_function(start_address)`: Get assembly code (address: instruction; comment) for a function.
+- `disassemble_address(start_address, instruction_count)`: Get assembly for N instructions from an address.
 - `get_xrefs_to(address)`: Get all cross references to the given address.
 - `get_xrefs_to_field(struct_name, field_name)`: Get all cross references to a named struct field (member).
 - `get_entry_points()`: Get all entry points in the database.

@@ -809,12 +809,12 @@ class Global(TypedDict):
 
 @jsonrpc
 @idaread
-def list_globals_filter(
+def list_globals(
     offset: Annotated[int, "Offset to start listing from (start at 0)"],
     count: Annotated[int, "Number of globals to list (100 is a good default, 0 means remainder)"],
-    filter: Annotated[str, "Filter to apply to the list (required parameter, empty string for no filter). Case-insensitive contains or /regex/ syntax"],
+    filter: Annotated[str, "Optional filter to apply (empty string for no filter). Case-insensitive contains or /regex/ syntax"] = "",
 ) -> Page[Global]:
-    """List matching globals in the database (paginated, filtered)"""
+    """List globals in the database (paginated, optional filter)"""
     globals = []
     for addr, name in idautils.Names():
         # Skip functions
@@ -823,14 +823,6 @@ def list_globals_filter(
 
     globals = pattern_filter(globals, filter, "name")
     return paginate(globals, offset, count)
-
-@jsonrpc
-def list_globals(
-    offset: Annotated[int, "Offset to start listing from (start at 0)"],
-    count: Annotated[int, "Number of globals to list (100 is a good default, 0 means remainder)"],
-) -> Page[Global]:
-    """List all globals in the database (paginated)"""
-    return list_globals_filter(offset, count, "")
 
 class Import(TypedDict):
     address: str
@@ -872,12 +864,12 @@ class String(TypedDict):
 
 @jsonrpc
 @idaread
-def list_strings_filter(
+def list_strings(
     offset: Annotated[int, "Offset to start listing from (start at 0)"],
     count: Annotated[int, "Number of strings to list (100 is a good default, 0 means remainder)"],
-    filter: Annotated[str, "Filter to apply to the list (required parameter, empty string for no filter). Case-insensitive contains or /regex/ syntax"],
+    filter: Annotated[str, "Optional filter to apply (empty string for no filter). Case-insensitive contains or /regex/ syntax"] = "",
 ) -> Page[String]:
-    """List matching strings in the database (paginated, filtered)"""
+    """List strings in the database (paginated, optional filter)"""
     strings = []
     for item in idautils.Strings():
         try:
@@ -890,14 +882,6 @@ def list_strings_filter(
             continue
     strings = pattern_filter(strings, filter, "string")
     return paginate(strings, offset, count)
-
-@jsonrpc
-def list_strings(
-    offset: Annotated[int, "Offset to start listing from (start at 0)"],
-    count: Annotated[int, "Number of strings to list (100 is a good default, 0 means remainder)"],
-) -> Page[String]:
-    """List all strings in the database (paginated)"""
-    return list_strings_filter(offset, count, "")
 
 @jsonrpc
 @idaread
@@ -1118,6 +1102,98 @@ def disassemble_function(
         disassembly_function.update(arguments=arguments)
 
     return disassembly_function
+
+@jsonrpc
+@idaread
+def disassemble_address(
+    start_address: Annotated[str, "Starting address to disassemble from"],
+    instruction_count: Annotated[int, "Number of instructions to disassemble"],
+) -> list[DisassemblyLine]:
+    """Disassemble a fixed number of instructions starting at the given address"""
+    current_ea = parse_address(start_address)
+    max_ea = ida_ida.inf_get_max_ea()
+
+    lines: list[DisassemblyLine] = []
+    for _ in range(instruction_count):
+        # Decode instruction; stop if decoding fails
+        insn = idaapi.insn_t()
+        if not idaapi.decode_insn(insn, current_ea):
+            break
+
+        seg = idaapi.getseg(current_ea)
+        segment = idaapi.get_segm_name(seg) if seg else None
+
+        label = idc.get_name(current_ea, 0)
+        if label == "":
+            label = None
+
+        comments = []
+        if comment := idaapi.get_cmt(current_ea, False):
+            comments += [comment]
+        if comment := idaapi.get_cmt(current_ea, True):
+            comments += [comment]
+
+        raw_instruction = idaapi.generate_disasm_line(current_ea, 0)
+        tls = ida_kernwin.tagged_line_sections_t()
+        ida_kernwin.parse_tagged_line_sections(tls, raw_instruction)
+        insn_section = tls.first(ida_lines.COLOR_INSN)
+
+        operands = []
+        for op_tag in range(ida_lines.COLOR_OPND1, ida_lines.COLOR_OPND8 + 1):
+            op_n = tls.first(op_tag)
+            if not op_n:
+                break
+
+            op: str = op_n.substr(raw_instruction)
+            op_str = ida_lines.tag_remove(op)
+
+            # Add address comments for operands when possible
+            for idx in range(len(op) - 2):
+                if op[idx] != idaapi.COLOR_ON:
+                    continue
+
+                idx += 1
+                if ord(op[idx]) != idaapi.COLOR_ADDR:
+                    continue
+
+                idx += 1
+                addr_string = op[idx:idx + idaapi.COLOR_ADDR_SIZE]
+                idx += idaapi.COLOR_ADDR_SIZE
+
+                addr = int(addr_string, 16)
+
+                # Find the next color and slice until there
+                symbol = op[idx:op.find(idaapi.COLOR_OFF, idx)]
+
+                if symbol == '':
+                    symbol = op_str
+
+                comments += [f"{symbol}={addr:#x}"]
+
+            operands += [op_str]
+
+        mnem = ida_lines.tag_remove(insn_section.substr(raw_instruction))
+        instruction = f"{mnem} {', '.join(operands)}".rstrip()
+
+        line = DisassemblyLine(
+            address=f"{current_ea:#x}",
+            instruction=instruction,
+        )
+        if len(comments) > 0:
+            line.update(comments=comments)
+        if segment:
+            line.update(segment=segment)
+        if label:
+            line.update(label=label)
+
+        lines += [line]
+
+        next_ea = idc.next_head(current_ea, max_ea)
+        if next_ea == idaapi.BADADDR or next_ea <= current_ea:
+            break
+        current_ea = next_ea
+
+    return lines
 
 class Xref(TypedDict):
     address: str
@@ -2313,12 +2389,12 @@ class MCP(idaapi.plugin_t):
             self.server = Server(host, port)
             self.server.start()
             
-            # Check if server actually started successfully
+            # Check if server is running
             if self.server.running:
                 self.is_running = True
-                print(f"[MCP] Server started successfully at http://{host}:{port}")
+                print(f"[MCP] Server is running at http://{host}:{port}")
             else:
-                print("[MCP] Failed to start server")
+                print("[MCP] Server is not running")
                 self.server = None
                 self.is_running = False
 
