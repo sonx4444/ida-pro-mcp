@@ -25,3 +25,7 @@ venv*/
 
 # Generated server files
 server_generated.py
+
+# Cursor, vscode
+.cursor/
+.vscode/
