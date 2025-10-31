@@ -2586,7 +2586,7 @@ class MCP(idaapi.plugin_t):
                     f"MCP server is running at http://{self.server.host}:{self.server.port}\n\nDo you want to stop it?")
                 if response == ida_kernwin.ASKBTN_YES:
                     self.server.stop()
-                    ida_kernwin.info(f"MCP server stopped")
+                    # ida_kernwin.info(f"MCP server stopped")
             except:
                 # Fallback to console
                 print(f"[MCP] Server is running at http://{self.server.host}:{self.server.port}")
