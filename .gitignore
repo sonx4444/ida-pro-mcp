@@ -1,0 +1,28 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv*/
+venv*/
+
+# Logs
+*.log
+
+# Test files
+*.idb
+*.i64
+*.nam
+*.id0
+*.id1
+*.id2
+*.til
+*.elf
+
+server_generated.py
+uv.lock
+.github/
