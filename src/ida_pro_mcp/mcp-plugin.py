@@ -1179,7 +1179,7 @@ def disassemble_function(
     disassembly_function = DisassemblyFunction(
         name=func.name,
         start_ea=f"{func.start_ea:#x}",
-        stack_frame=get_stack_frame_variables_internal(func.start_ea),
+        stack_frame=get_stack_frame_variables_internal(func.start_ea, False),
         lines=lines
     )
 
