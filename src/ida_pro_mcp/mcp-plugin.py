@@ -849,10 +849,23 @@ def pattern_filter(data: list[T], pattern: str, key: str) -> list[T]:
     if not pattern:
         return data
 
-    # TODO: implement /regex/ matching
-
-    def matches(item) -> bool:
-        return pattern.lower() in item[key].lower()
+    # Check if pattern is a regex (wrapped in /.../)
+    if pattern.startswith('/') and pattern.endswith('/') and len(pattern) > 2:
+        import re
+        regex_pattern = pattern[1:-1]  # Remove the / delimiters
+        try:
+            compiled_regex = re.compile(regex_pattern, re.IGNORECASE)
+            def matches(item) -> bool:
+                return compiled_regex.search(item[key]) is not None
+        except re.error:
+            # If regex is invalid, fall back to literal matching
+            def matches(item) -> bool:
+                return pattern.lower() in item[key].lower()
+    else:
+        # Case-insensitive substring matching
+        def matches(item) -> bool:
+            return pattern.lower() in item[key].lower()
+    
     return list(filter(matches, data))
 
 @jsonrpc
@@ -860,9 +873,11 @@ def pattern_filter(data: list[T], pattern: str, key: str) -> list[T]:
 def list_functions(
     offset: Annotated[int, "Offset to start listing from (start at 0)"],
     count: Annotated[int, "Number of functions to list (100 is a good default, 0 means remainder)"],
+    filter: Annotated[str, "Filter by function name (optional, empty string for no filter). Use plain text for case-insensitive substring match (e.g., 'malloc'), or wrap in /slashes/ for regex (e.g., '/^sub_[0-9A-F]+$/' for IDA default names)"] = "",
 ) -> Page[Function]:
-    """List all functions in the database (paginated)"""
+    """List all functions in the database (paginated, optional filter)"""
     functions = [get_function(address) for address in idautils.Functions()]
+    functions = pattern_filter(functions, filter, "name")
     return paginate(functions, offset, count)
 
 class Global(TypedDict):
@@ -874,7 +889,7 @@ class Global(TypedDict):
 def list_globals(
     offset: Annotated[int, "Offset to start listing from (start at 0)"],
     count: Annotated[int, "Number of globals to list (100 is a good default, 0 means remainder)"],
-    filter: Annotated[str, "Filter to apply to the list (optional, empty string for no filter). Case-insensitive contains or /regex/ syntax"] = "",
+    filter: Annotated[str, "Filter by global name (optional, empty string for no filter). Use plain text for case-insensitive substring match (e.g., 'config'), or wrap in /slashes/ for regex (e.g., '/^g_.*_ptr$/' for globals ending with _ptr)"] = "",
 ) -> Page[Global]:
     """List globals in the database (paginated, optional filter)"""
     globals: list[Global] = []
@@ -896,8 +911,9 @@ class Import(TypedDict):
 def list_imports(
         offset: Annotated[int, "Offset to start listing from (start at 0)"],
         count: Annotated[int, "Number of imports to list (100 is a good default, 0 means remainder)"],
+        filter: Annotated[str, "Filter by imported symbol name (optional, empty string for no filter). Use plain text for case-insensitive substring match (e.g., 'socket'), or wrap in /slashes/ for regex (e.g., '/Create.*W$/' for Unicode Create functions)"] = "",
 ) -> Page[Import]:
-    """ List all imported symbols with their name and module (paginated) """
+    """ List all imported symbols with their name and module (paginated, optional filter) """
     nimps = ida_nalt.get_import_module_qty()
 
     rv = []
@@ -917,6 +933,7 @@ def list_imports(
         imp_cb_w_context = lambda ea, symbol_name, ordinal: imp_cb(ea, symbol_name, ordinal, rv)
         ida_nalt.enum_import_names(i, imp_cb_w_context)
 
+    rv = pattern_filter(rv, filter, "imported_name")
     return paginate(rv, offset, count)
 
 class String(TypedDict):
@@ -929,7 +946,7 @@ class String(TypedDict):
 def list_strings(
     offset: Annotated[int, "Offset to start listing from (start at 0)"],
     count: Annotated[int, "Number of strings to list (100 is a good default, 0 means remainder)"],
-    filter: Annotated[str, "Filter to apply to the list (optional, empty string for no filter). Case-insensitive contains or /regex/ syntax"] = "",
+    filter: Annotated[str, "Filter by string content (optional, empty string for no filter). Use plain text for case-insensitive substring match (e.g., 'error'), or wrap in /slashes/ for regex (e.g., '/https?://.*/' for URLs)"] = "",
 ) -> Page[String]:
     """List strings in the database (paginated, optional filter)"""
     strings: list[String] = []

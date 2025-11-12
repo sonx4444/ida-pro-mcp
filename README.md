@@ -11,17 +11,17 @@ Available functionality:
 - `get_current_address()`: Get the address currently selected by the user.
 - `get_current_function()`: Get the function currently selected by the user.
 - `convert_number(text, size)`: Convert a number (decimal, hexadecimal) to different representations.
-- `list_functions(offset, count)`: List all functions in the database (paginated).
+- `list_functions(offset, count, ?filter)`: List all functions in the database (paginated, optional filter).
 - `list_globals(offset, count, ?filter)`: List globals in the database (paginated, optional filter).
-- `list_imports(offset, count)`: List all imported symbols with their name and module (paginated).
+- `list_imports(offset, count, ?filter)`: List all imported symbols with their name and module (paginated, optional filter).
 - `list_strings(offset, count, ?filter)`: List strings in the database (paginated, optional filter).
 - `list_local_types()`: List all Local types in the database.
 - `decompile_function(address)`: Decompile a function at the given address.
-- `disassemble_function(start_address)`: Get assembly code (address: instruction; comment) for a function.
+- `disassemble_function(start_address)`: Get assembly code for a function.
 - `disassemble_address(start_address, instruction_count)`: Get assembly for N instructions from an address.
 - `get_xrefs_to(address)`: Get all cross references to the given address.
 - `get_xrefs_to_field(struct_name, field_name)`: Get all cross references to a named struct field (member).
-- `get_callees(function_address)`: Get all the functions called (callees) by the function at function_address. 
+- `get_callees(function_address)`: Get all the functions called (callees) by the function at function_address.
 - `get_callers(function_address)`: Get all callers of the given address.
 - `get_entry_points()`: Get all entry points in the database.
 - `set_comment(address, comment)`: Set a comment for a given address in the function disassembly and pseudocode.
@@ -29,7 +29,7 @@ Available functionality:
 - `rename_global_variable(old_name, new_name)`: Rename a global variable.
 - `set_global_variable_type(variable_name, new_type)`: Set a global variable's type.
 - `patch_address_assembles(address, instructions)`: Patch multiple assembly instructions at sequential addresses.
-- `get_global_variable_value_by_name(variable_name)`: Read a global variable's value (if known at compile-time).      
+- `get_global_variable_value_by_name(variable_name)`: Read a global variable's value (if known at compile-time).
 - `get_global_variable_value_at_address(address)`: Read a global variable's value by its address (if known at compile-time).
 - `rename_function(function_address, new_name)`: Rename a function.
 - `set_function_prototype(function_address, prototype)`: Set a function's prototype.
@@ -41,11 +41,9 @@ Available functionality:
 - `get_struct_at_address(address, struct_name)`: Get structure field values at a specific address.
 - `get_struct_info_simple(name)`: Simple function to get basic structure information.
 - `search_structures(filter)`: Search for structures by name pattern.
-- `rename_stack_frame_variable(function_address, old_name, new_name)`: Change the name of a stack variable for an IDA 
-function.
+- `rename_stack_frame_variable(function_address, old_name, new_name)`: Change the name of a stack variable for an IDA function.
 - `create_stack_frame_variable(function_address, offset, variable_name, type_name)`: For a given function, create a stack variable at an offset and with a specific type.
-- `set_stack_frame_variable_type(function_address, variable_name, type_name)`: For a given disassembled function, set 
-the type of a stack variable.
+- `set_stack_frame_variable_type(function_address, variable_name, type_name)`: For a given disassembled function, set the type of a stack variable.
 - `delete_stack_frame_variable(function_address, variable_name)`: Delete the named stack variable for a given function.
 - `read_memory(address, format)`: Read memory at an address with GDB-style format specifiers.
 
